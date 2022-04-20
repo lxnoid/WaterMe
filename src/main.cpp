@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "esp_system.h"
+// Konfiguration
+#include <Preferences.h>
 // Wifi
 #include <WifiClient.h>
 #include <WiFiManager.h>
@@ -10,19 +12,28 @@
 #include <PubSubClient.h>
 // local resource
 #include "webpage.h"
-String getMacAddress();
-void handle_root();
 
-int analogPin = 36;
-int boardLEDPin = 2;
-
-
+// Typen
 typedef struct pflanzen_werte {
   String plant_name;
   int wert;
   int wert_minimal;
   int wert_maximal;
 } t_pflanze;
+
+// Hardware Setup
+int analogPin = 36;
+int boardLEDPin = 2;
+
+// Funktionen
+String getMacAddress();
+void handle_root();
+void handleAktuellerSensor();
+void handleKonfiguration();
+void handleUpdateKonfiguration();
+
+// ==================================== Globals ==========================================
+Preferences preferences;
 
 t_pflanze sensor = {
   .plant_name = "Helga",
@@ -31,28 +42,35 @@ t_pflanze sensor = {
   .wert_maximal = 4500
 };
 
-WebServer server(80);  // Object of WebServer(HTTP port, 80 is defult)
+// -> Webserver
+WebServer server(80);
 
 unsigned long alte_millis = 0;
+unsigned long current_millis = 0;
+unsigned long prev_millis = 0;
 
+// -> MQTT
 char mqttServer[1024]    = "nail.i234.me"; 
 int  mqttPort            = 10883; 
 char mqttUser[1024]      = "";
 char mqttPassword[1024]  = "";
 char mqttClientId[1024]  = "";
+int mqtt_status = 10 * 60 * 1000; //in Millisekunden
 
 WiFiClient wifi_client;
 PubSubClient mqtt_client(wifi_client);
 
 // ==================================== Globals ==========================================
-unsigned long current_millis = 0;
-unsigned long prev_millis = 0;
-
-int mqtt_status = 10 * 1000; //10s - sending every 10s
 
 void setup() {
   Serial.begin(115200);
   pinMode(boardLEDPin, OUTPUT);
+
+  // Load old preferences
+  preferences.begin("pflanze");
+  sensor.plant_name = preferences.getString("name", "Helga");
+  sensor.wert_minimal = preferences.getInt("min", 0);
+  sensor.wert_maximal = preferences.getInt("max", 4500);
 
   // Connect to your wi-fi modem
   WiFiManager wifiManager;
@@ -111,6 +129,7 @@ void handleKonfiguration()
 
 void handleUpdateKonfiguration()
 {
+  boolean changed = false;
   StaticJsonDocument<200> config;
   String json = server.arg(0);
   deserializeJson(config, json);
@@ -119,11 +138,23 @@ void handleUpdateKonfiguration()
   long v_min = config["min"];
   long v_max = config["max"];
 
+  if ( sensor.plant_name != String(name) ||
+       sensor.wert_minimal != (int)v_min ||
+       sensor.wert_maximal != (int)v_max ) 
+  {
+    changed = true;
+  }
+
   sensor.plant_name = String(name);
   sensor.wert_minimal = (int)v_min;
   sensor.wert_maximal = (int)v_max;
-
   server.send(200);
+
+  if (changed) {
+      preferences.putString("name", sensor.plant_name);
+      preferences.putInt("min", sensor.wert_minimal);
+      preferences.putInt("max", sensor.wert_maximal);
+  }
 }
 
 void loop() {
