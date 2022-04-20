@@ -11,88 +11,75 @@
 // MQTT
 #include <PubSubClient.h>
 // local resource
-#include "webpage.h"
-
-// Typen
-typedef struct pflanzen_werte {
-  String plant_name;
-  int wert;
-  int wert_minimal;
-  int wert_maximal;
-} t_pflanze;
+#include <helper.h>
 
 // Hardware Setup
 int analogPin = 36;
 int boardLEDPin = 2;
 
-// Funktionen
-String getMacAddress();
-void handle_root();
-void handleAktuellerSensor();
-void handleKonfiguration();
-void handleUpdateKonfiguration();
-
 // ==================================== Globals ==========================================
 Preferences preferences;
-
-t_pflanze sensor = {
-  .plant_name = "Helga",
-  .wert = 0,
-  .wert_minimal = 0,
-  .wert_maximal = 4500
-};
+t_pflanze pflaenzchen;
 
 // -> Webserver
 WebServer server(80);
 
+// -> Zeiten
 unsigned long alte_millis = 0;
 unsigned long current_millis = 0;
 unsigned long prev_millis = 0;
 
-// -> MQTT
-char mqttServer[1024]    = "nail.i234.me"; 
-int  mqttPort            = 10883; 
-char mqttUser[1024]      = "";
-char mqttPassword[1024]  = "";
-char mqttClientId[1024]  = "";
-int mqtt_status = 10 * 60 * 1000; //in Millisekunden
-
+// -> MQTT & Wifi
 WiFiClient wifi_client;
+t_mqtt_val mqtt_v;
 PubSubClient mqtt_client(wifi_client);
+int mqtt_status = 10 * 60 * 1000; // in Millisekunden
 
-// ==================================== Globals ==========================================
-
-void setup() {
+// ==================================== Setup ==========================================
+void setup()
+{
   Serial.begin(115200);
   pinMode(boardLEDPin, OUTPUT);
 
   // Load old preferences
   preferences.begin("pflanze");
-  sensor.plant_name = preferences.getString("name", "Helga");
-  sensor.wert_minimal = preferences.getInt("min", 0);
-  sensor.wert_maximal = preferences.getInt("max", 4500);
+  pflaenzchen.plant_name = preferences.getString("name", "Helga");
+  pflaenzchen.wert_minimal = preferences.getInt("min", 0);
+  pflaenzchen.wert_maximal = preferences.getInt("max", 4500);
 
   // Connect to your wi-fi modem
   WiFiManager wifiManager;
   bool result = wifiManager.autoConnect();
-  if (!result) {
+  if (!result)
+  {
     Serial.println("Nicht verbunden.");
   }
-  else {
+  else
+  {
     Serial.println("Wifi is da!");
   }
 
+  snprintf(mqtt_v.mqttServer, sizeof(mqtt_v.mqttServer), "%s", "nail.i234.me");
+  mqtt_v.mqttPort = 10883;
+  snprintf(mqtt_v.mqttUser, sizeof(mqtt_v.mqttUser), "%s", "");
+  snprintf(mqtt_v.mqttPassword, sizeof(mqtt_v.mqttPassword), "%s", "");
+  snprintf(mqtt_v.mqttClientId, sizeof(mqtt_v.mqttClientId), "%s", "");
+
   char mac_address[13];
   getMacAddress().toCharArray(mac_address, 13);
-  snprintf(mqttClientId, 1024, "%s", mac_address);
+  snprintf(mqtt_v.mqttClientId, 1024, "%s", mac_address);
   // MQTT ------------------------------------------------------------------------------
-  mqtt_client.setServer(mqttServer, mqttPort);
-  
-  while (!mqtt_client.connected()) {
+  mqtt_client.setServer(mqtt_v.mqttServer, mqtt_v.mqttPort);
+
+  while (!mqtt_client.connected())
+  {
     Serial.println("...Connecting to MQTT");
-    if (mqtt_client.connect(mqttClientId, mqttUser, mqttPassword )) {
+    if (mqtt_client.connect(mqtt_v.mqttClientId, mqtt_v.mqttUser, mqtt_v.mqttPassword))
+    {
       Serial.println("Connected to MQTT");
-    } else {
+    }
+    else
+    {
       Serial.print("Failed connecting MQTT with state: ");
       Serial.print(mqtt_client.state());
       delay(2000);
@@ -103,127 +90,91 @@ void setup() {
   Serial.println("-- End of Setup --");
 }
 
-boolean mqtt_reconnect() {
-  if (mqtt_client.connect(mqttClientId, mqttUser, mqttPassword )) {
-    mqtt_client.publish("waterme/pflanzen/pflanze", "Hello World, again", true);
-  }
-  return mqtt_client.connected();
-}
-
-// Handle root url (/)
-void handle_root() {
-  server.send(200, "text/html", webpageCode);
-}
-
-void handleAktuellerSensor()
+// ==================================== Loop ==========================================
+void loop()
 {
-  String sensorWert = String(sensor.wert);
-  server.send(200, "text/plane", sensorWert);
-}
-
-void handleKonfiguration()
-{
-  String config = "{ \"name\" : \"" + sensor.plant_name + "\", \"min\" : \"" + sensor.wert_minimal + "\", \"max\" : \"" + sensor.wert_maximal + "\" }";
-  server.send(200, "text/plane", config);
-}
-
-void handleUpdateKonfiguration()
-{
-  boolean changed = false;
-  StaticJsonDocument<200> config;
-  String json = server.arg(0);
-  deserializeJson(config, json);
-
-  const char* name = config["name"];
-  long v_min = config["min"];
-  long v_max = config["max"];
-
-  if ( sensor.plant_name != String(name) ||
-       sensor.wert_minimal != (int)v_min ||
-       sensor.wert_maximal != (int)v_max ) 
-  {
-    changed = true;
-  }
-
-  sensor.plant_name = String(name);
-  sensor.wert_minimal = (int)v_min;
-  sensor.wert_maximal = (int)v_max;
-  server.send(200);
-
-  if (changed) {
-      preferences.putString("name", sensor.plant_name);
-      preferences.putInt("min", sensor.wert_minimal);
-      preferences.putInt("max", sensor.wert_maximal);
-  }
-}
-
-void loop() {
   static bool startup = false;
   static bool isBoardLEDon = false;
   unsigned long aktuelle_millis = millis();
   current_millis = millis();
 
-  if (!startup) {
+  if (!startup)
+  {
     // Check wi-fi is connected to wi-fi network
     Serial.println("WiFi connected successfully");
     Serial.print("Got IP: ");
-    Serial.println(WiFi.localIP());  //Show ESP32 IP on serial
+    Serial.println(WiFi.localIP()); // Show ESP32 IP on serial
 
-    server.on("/", handle_root);
-    server.on("/readADC", handleAktuellerSensor);
-    server.on("/readConfig", handleKonfiguration);
-    server.on("/updateConfig", handleUpdateKonfiguration);
-    server.begin();
+    startWebServer();
+
     Serial.println("HTTP server started");
     startup = true;
-  } 
+  }
 
   server.handleClient();
-  sensor.wert = analogRead(analogPin);    // read the input pin
+  pflaenzchen.wert = analogRead(analogPin); // read the input pin
 
-
-  if (aktuelle_millis - alte_millis >= 1000) {
+  if (aktuelle_millis - alte_millis >= 1000)
+  {
     alte_millis = aktuelle_millis;
-    // Serial.println(String(aktuelle_millis));
-    // Serial.println(String(isBoardLEDon));
-    if (isBoardLEDon) {
+    if (isBoardLEDon)
+    {
       digitalWrite(boardLEDPin, LOW);
       isBoardLEDon = false;
-    } else {
+    }
+    else
+    {
       digitalWrite(boardLEDPin, HIGH);
       isBoardLEDon = true;
     }
   }
 
-  if ((int)(current_millis - prev_millis) >= mqtt_status) {
+  if ((int)(current_millis - prev_millis) >= mqtt_status)
+  {
     char mqtt_message[400];
     char mqtt_topic[120];
     char c_plant_name[32];
-    sensor.plant_name.toCharArray(c_plant_name, 32);
-    snprintf(mqtt_topic, 120, "waterme/pflanzen/pflanze-%s", mqttClientId);
-    snprintf(mqtt_message, 400, "{ \"name\" : \"%s\", \"value\" : \"%d\", \"min\" : \"%d\", \"max\" : \"%d\"  }", c_plant_name, sensor.wert, sensor.wert_minimal, sensor.wert_maximal);
-    // Serial.println(mqtt_topic);
-    // Serial.println(mqtt_message);
+    pflaenzchen.plant_name.toCharArray(c_plant_name, 32);
+    snprintf(mqtt_topic, 120, "waterme/pflanzen/pflanze-%s", mqtt_v.mqttClientId);
+    snprintf(mqtt_message, 400, "{ \"name\" : \"%s\", \"value\" : \"%d\", \"min\" : \"%d\", \"max\" : \"%d\"  }", c_plant_name, pflaenzchen.wert, pflaenzchen.wert_minimal, pflaenzchen.wert_maximal);
     boolean status = mqtt_client.publish(mqtt_topic, mqtt_message, 80);
-    if (!status) {
+    if (!status)
+    {
       Serial.println("MQTT - sending failed: " + status);
     }
     prev_millis = current_millis;
   }
-  //check if MQTT and Wifi connected (wifi is set to reconnect on auto)
-  if (!mqtt_client.connected()) {
+
+  // check if MQTT and Wifi connected (wifi is set to reconnect on auto)
+  if (!mqtt_client.connected())
+  {
     mqtt_reconnect();
     delay(200);
   }
-
 }
 
-String getMacAddress()
+// ==================================== Getters ==========================================
+WebServer *getServer(void)
 {
-	uint8_t baseMac[6];
-	// Get MAC address for WiFi station
-	esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
-	char baseMacChr[18] = {0};
-	sprintf(baseMacChr, "%02X%02X%02X%02X%02X%02X", baseMac[0], baseMac[1], baseMac[2], baseMac[3], baseMac[4], baseMac[5]);
-	return String(baseMacChr);
+  return &server;
+}
+
+t_mqtt_val *getMQTTSetup(void)
+{
+  return &mqtt_v;
+}
+
+PubSubClient *getMQTTServer(void)
+{
+  return &mqtt_client;
+}
+
+t_pflanze *getPlant(void)
+{
+  return &pflaenzchen;
+}
+
+Preferences *getPreferences(void)
+{
+  return &preferences;
 }
