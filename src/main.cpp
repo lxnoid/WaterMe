@@ -1,24 +1,35 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include "esp_system.h"
+// Wifi
 #include <WifiClient.h>
 #include <WiFiManager.h>
+// Webserver
 #include <WebServer.h>
+// MQTT
 #include <PubSubClient.h>
 // local resource
 #include "webpage.h"
-#include "esp_system.h"
 String getMacAddress();
 void handle_root();
 
 int analogPin = 36;
 int boardLEDPin = 2;
 
-typedef struct sensor_werte {
+
+typedef struct pflanzen_werte {
+  String plant_name;
   int wert;
   int wert_minimal;
   int wert_maximal;
-} t_sensor;
+} t_pflanze;
 
-t_sensor sensor;
+t_pflanze sensor = {
+  .plant_name = "Helga",
+  .wert = 0,
+  .wert_minimal = 0,
+  .wert_maximal = 4500
+};
 
 WebServer server(80);  // Object of WebServer(HTTP port, 80 is defult)
 
@@ -83,25 +94,35 @@ boolean mqtt_reconnect() {
 
 // Handle root url (/)
 void handle_root() {
- server.send(200, "text/html", webpageCode);
+  server.send(200, "text/html", webpageCode);
 }
 
 void handleAktuellerSensor()
 {
- String sensorWert = String(sensor.wert);
- server.send(200, "text/plane", sensorWert);
+  String sensorWert = String(sensor.wert);
+  server.send(200, "text/plane", sensorWert);
 }
 
 void handleKonfiguration()
 {
- String config = "{ \"name\" : \"Helga\", \"min\" : \"0\", \"max\" : \"4000\" }";
- server.send(200, "text/plane", config);
+  String config = "{ \"name\" : \"" + sensor.plant_name + "\", \"min\" : \"" + sensor.wert_minimal + "\", \"max\" : \"" + sensor.wert_maximal + "\" }";
+  server.send(200, "text/plane", config);
 }
 
 void handleUpdateKonfiguration()
 {
-  String message = server.arg(0);
-  Serial.println(message);
+  StaticJsonDocument<200> config;
+  String json = server.arg(0);
+  deserializeJson(config, json);
+
+  const char* name = config["name"];
+  long v_min = config["min"];
+  long v_max = config["max"];
+
+  sensor.plant_name = String(name);
+  sensor.wert_minimal = (int)v_min;
+  sensor.wert_maximal = (int)v_max;
+
   server.send(200);
 }
 
@@ -144,14 +165,18 @@ void loop() {
   }
 
   if ((int)(current_millis - prev_millis) >= mqtt_status) {
-    char mqtt_message[80];
-    char mqtt_topic[80];
-    snprintf(mqtt_message, 80, "{ value: %d }", sensor.wert);
-    snprintf(mqtt_topic, 80, "waterme/pflanzen/pflanze-%s", mqttClientId);
+    char mqtt_message[400];
+    char mqtt_topic[120];
+    char c_plant_name[32];
+    sensor.plant_name.toCharArray(c_plant_name, 32);
+    snprintf(mqtt_topic, 120, "waterme/pflanzen/pflanze-%s", mqttClientId);
+    snprintf(mqtt_message, 400, "{ \"name\" : \"%s\", \"value\" : \"%d\", \"min\" : \"%d\", \"max\" : \"%d\"  }", c_plant_name, sensor.wert, sensor.wert_minimal, sensor.wert_maximal);
     // Serial.println(mqtt_topic);
     // Serial.println(mqtt_message);
     boolean status = mqtt_client.publish(mqtt_topic, mqtt_message, 80);
-    // Serial.println(status);
+    if (!status) {
+      Serial.println("MQTT - sending failed: " + status);
+    }
     prev_millis = current_millis;
   }
   //check if MQTT and Wifi connected (wifi is set to reconnect on auto)
